@@ -1,0 +1,536 @@
+"""Temporary RAG context injection for the existing Pipecat LLM turn."""
+
+import asyncio
+import copy
+import logging
+from difflib import SequenceMatcher
+import re
+import time
+
+from pipecat.frames.frames import Frame, LLMContextFrame
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.frame_processor import FrameProcessor
+
+from rag.retrieve import HybridRetriever, RetrievalResult
+from trace_recorder import trace_recorder
+
+logger = logging.getLogger(__name__)
+
+
+_SMALL_TALK = re.compile(
+    r"^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening)|thanks|thank\s+you|"
+    r"okay|ok|sure|great|sounds\s+good|got\s+it|bye|goodbye)[.!?\s]*$",
+    re.IGNORECASE,
+)
+_PERSONAL_BOOKING = re.compile(
+    r"\b(?:i(?:'d| would)?\s+like|i\s+want|i\s+need|can\s+you|could\s+you|please)\b"
+    r".*\b(?:book|schedule|reschedule|cancel)\b|"
+    r"\b(?:book|schedule|reschedule|cancel)\b.*\b(?:me|my|a\s+meeting|an\s+appointment)\b",
+    re.IGNORECASE,
+)
+_BOOKING_FIELD = re.compile(
+    r"^my\s+name\s+is\s+[a-z .'-]{2,40}$|"
+    r"^[^\s@]+@[^\s@]+\.[^\s@]+$|"
+    r"^(?:(?:today|tomorrow|next\s+\w+)|(?:\d{4}-\d{2}-\d{2})|"
+    r"(?:around\s+|at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)|"
+    r"(?:morning|afternoon|evening))$",
+    re.IGNORECASE,
+)
+_COMPANY_CAPABILITY_QUESTION = re.compile(
+    r"\b(?:can|could|did|do|does|will|would)\s+"
+    r"(?:you(?:\s+guys)?|your\s+(?:company|team)|the\s+(?:company|team))"
+    r"(?:\s+\w+){0,3}\s+"
+    r"(?:do|build|create|develop|make|offer|provide|handle|support|integrate|work\s+(?:with|on))\b|"
+    r"\bare\s+you(?:\s+\w+){0,3}\s+(?:able\s+to\s+)?"
+    r"(?:build|create|develop|make|offer|provide|handle|support|integrate)\b|"
+    r"\bwhat\s+can\s+(?:you(?:\s+guys)?|your\s+(?:company|team))"
+    r"(?:\s+\w+){0,3}\s+(?:do|build|create|develop|make|handle)(?:\s+with)?\b|"
+    r"\bi\s+(?:want|need|would\s+like)\s+you\s+to\s+"
+    r"(?:do|build|create|develop|make|offer|provide|handle|support|integrate)\b|"
+    r"\bis\b.{1,80}\b(?:one\s+of\s+your\s+services|"
+    r"something\s+(?:you|your\s+company|your\s+team)\s+(?:do|offer|provide))\b",
+    re.IGNORECASE,
+)
+_PRICING_QUESTION = re.compile(
+    r"\b(?:price|prices|pricing|cost|costs|charge|charges|quote|budget|"
+    r"discount|discounts|package|packages)\b",
+    re.IGNORECASE,
+)
+_KNOWLEDGE_SIGNALS = (
+    "agentix",
+    "company",
+    "service",
+    "capabilit",
+    "what do you do",
+    "what do you build",
+    "can you build",
+    "do you build",
+    "work with",
+    "technology",
+    "technologies",
+    "tech stack",
+    "industry",
+    "industries",
+    "project",
+    "product",
+    "portfolio",
+    "pongverse",
+    "deepsort",
+    "langgraph",
+    "voice agent",
+    "customer calls",
+    "call handling",
+    "automation",
+    "multi-agent",
+    "computer vision",
+    "multi-camera",
+    "3d reconstruction",
+    "rag system",
+    "integration",
+    "crm",
+    "pricing",
+    "price",
+    "cost",
+    "charge",
+    "commercial term",
+    "delivery",
+    "process",
+    "policy",
+    "policies",
+    "office",
+    "address",
+    "located",
+    "location",
+    "team",
+    "founder",
+    "client",
+    "testimonial",
+    "certification",
+    "partner",
+    "guarantee",
+)
+_UNVERIFIED_SIGNALS = (
+    "office",
+    "address",
+    "located",
+    "location",
+    "client",
+    "testimonial",
+    "certification",
+    "partner",
+    "employee count",
+    "funding",
+    "award",
+    "discount",
+    "guarantee",
+)
+_STOP_WORDS = {
+    "a", "an", "and", "are", "can", "do", "does", "for", "have", "how",
+    "i", "in", "is", "it", "me", "of", "on", "something", "the", "to",
+    "what", "with", "would", "you", "your",
+}
+_CAPABILITY_SCAFFOLD = _STOP_WORDS | {
+    "able", "build", "built", "capability", "company", "create", "develop",
+    "could", "currently", "direct", "directly", "do", "does", "guys", "handle",
+    "integrate", "make", "offer", "one", "please", "provide", "service",
+    "like", "need", "something", "support", "team", "want", "will", "work", "working",
+}
+
+_ENTITY_ALIASES = {
+    "Agentix Labs AI": ("agentix labs ai", "agentix labs", "agent x labs ai", "agentics labs ai"),
+    "PongVerse": (
+        "pongverse", "pong verse", "pong versus", "gongverse",
+        "boneverse", "bone verse", "born verse",
+    ),
+    "AI Voice Agents": ("ai voice agent", "voice agents", "voice assistant", "voice assistance"),
+    "LangGraph": ("langgraph", "lang graph"),
+    "DeepSORT": ("deepsort", "deep sort"),
+    "Qdrant": ("qdrant",),
+    "multi-agent systems": ("multi-agent", "multi agent"),
+    "computer vision": ("computer vision",),
+    "Gaussian splatting": ("gaussian splatting",),
+    "MediaPipe": ("mediapipe", "media pipe"),
+}
+_PONGVERSE_UNRELATED = ("shoe", "shoes", "sneaker", "footwear", "chuck taylor")
+_CORRECTION_WORDS = re.compile(r"\b(?:no|not|mean|meant|actually|wala|rather)\b", re.IGNORECASE)
+
+
+def _normalized_words(value: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", value.lower()))
+
+
+def entity_hint(query: str, recent_user_queries=()) -> tuple[str | None, bool]:
+    """Return a conservative company-entity routing hint and whether it is ambiguous."""
+    normalized = _normalized_words(query)
+    if not normalized:
+        return None, False
+
+    for canonical, aliases in _ENTITY_ALIASES.items():
+        if any(re.search(rf"\b{re.escape(alias)}s?\b", normalized) for alias in aliases):
+            return canonical, False
+
+    # Company-name STT variants are accepted only when the phrase still ends in Labs AI.
+    words = normalized.split()
+    for size in (3, 4):
+        for start in range(len(words) - size + 1):
+            phrase = " ".join(words[start:start + size])
+            if "lab" in phrase and phrase.endswith(" ai"):
+                ratio = SequenceMatcher(None, phrase, "agentix labs ai").ratio()
+                if ratio >= 0.76:
+                    return "Agentix Labs AI", False
+
+    # "Converse" is an observed PongVerse transcription, but footwear questions stay unrelated.
+    if "converse" in normalized and not any(term in normalized for term in _PONGVERSE_UNRELATED):
+        return "PongVerse", True
+
+    previous = " ".join(_normalized_words(value) for value in recent_user_queries[-2:])
+    if any(term in normalized for term in ("tongva", "tongvas")) and any(
+        term in previous for term in ("gongverse", "pong verse", "pong versus", "pongverse")
+    ):
+        return "PongVerse", False
+    if (
+        "pong" in normalized
+        and _CORRECTION_WORDS.search(query)
+        and any(term in previous for term in ("converse", "pong verse", "pong versus", "pongverse"))
+    ):
+        return "PongVerse", False
+
+    return None, False
+
+
+def needs_rag(query: str, recent_user_queries=()) -> bool:
+    normalized = " ".join(query.lower().split())
+    if not normalized or _SMALL_TALK.fullmatch(normalized):
+        return False
+    if _BOOKING_FIELD.fullmatch(normalized):
+        return False
+    if entity_hint(query, recent_user_queries)[0]:
+        return True
+    has_company_intent = (
+        any(signal in normalized for signal in _KNOWLEDGE_SIGNALS)
+        or bool(_COMPANY_CAPABILITY_QUESTION.search(normalized))
+        or bool(_PRICING_QUESTION.search(normalized))
+    )
+    if _PERSONAL_BOOKING.search(normalized) and not has_company_intent:
+        return False
+    return has_company_intent
+
+
+def _is_broad_service_query(query: str) -> bool:
+    normalized = " ".join(query.lower().split())
+    return (
+        any(term in normalized for term in ("service", "capabilit", "solution"))
+        and any(term in normalized for term in ("offer", "provide", "have", "what", "which"))
+    )
+
+
+def retrieval_query(query: str, hint: str | None = None, ambiguous: bool = False) -> str:
+    """Add canonical vocabulary only for broad service-list questions."""
+    if hint and not ambiguous and hint.lower() not in query.lower():
+        query = f"{query} {hint}"
+    if _is_broad_service_query(query):
+        return (
+            f"{query} Agentix Labs AI voice agents multi-agent systems custom AI automation "
+            "LLM RAG full-stack AI applications AI integration computer vision"
+        )
+    return query
+
+
+def _terms(value: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", value.lower())
+        if len(token) > 2 and token not in _STOP_WORDS
+    }
+
+
+def _capability_terms(value: str) -> set[str]:
+    """Return explicit requested/evidence terms without question scaffolding."""
+    normalized = []
+    for token in re.findall(r"[a-z0-9]+", value.lower()):
+        if token in ("app", "apps"):
+            token = "application"
+        elif token.endswith("ies") and len(token) > 4:
+            token = f"{token[:-3]}y"
+        elif token.endswith("s") and len(token) > 3 and not token.endswith("ss") and token != "ios":
+            token = token[:-1]
+        normalized.append(token)
+    return {
+        token for token in normalized
+        if len(token) > 1 and token not in _CAPABILITY_SCAFFOLD
+    }
+
+
+def _matches_intent(query: str, result: RetrievalResult) -> bool:
+    combined = f"{result.heading} {result.text}".lower()
+    query_lower = query.lower()
+    if any(term in query_lower for term in ("cost", "price", "pricing", "charge")):
+        return any(term in combined for term in ("cost", "price", "pricing", "usd", "quote"))
+    if any(term in query_lower for term in ("office", "address", "located", "location")):
+        return "knowledge boundaries" in result.heading.lower() or any(
+            term in combined for term in ("office", "address", "location")
+        )
+    return bool(_terms(query) & _terms(combined)) or result.score >= 0.6
+
+
+def select_results(
+    query: str,
+    results: list[RetrievalResult],
+    hint: str | None = None,
+) -> list[RetrievalResult]:
+    if not results:
+        return []
+
+    query_lower = query.lower()
+    if any(signal in query_lower for signal in _UNVERIFIED_SIGNALS):
+        boundary = next(
+            (result for result in results if "knowledge boundaries" in result.heading.lower()),
+            None,
+        )
+        if boundary:
+            return [boundary]
+
+    if hint:
+        hint_terms = _terms(hint)
+        results = [
+            result
+            for result in results
+            if hint.lower() in f"{result.heading} {result.text}".lower()
+            or hint_terms.issubset(_terms(f"{result.heading} {result.text}"))
+        ]
+        if not results:
+            return []
+
+    useful = [result for result in results if result.score >= 0.4 and _matches_intent(query, result)]
+    if not useful:
+        return []
+
+    top = useful[0]
+    if _is_broad_service_query(query) and top.score >= 0.65:
+        return [top]
+    normalized_heading = re.sub(r"[^a-z0-9 ]", "", top.heading.lower()).strip()
+    normalized_query = re.sub(r"[^a-z0-9 ]", "", query_lower).strip()
+    if top.score >= 0.75 or normalized_heading == normalized_query:
+        return [top]
+
+    cutoff = max(0.4, top.score * 0.75)
+    return [result for result in useful if result.score >= cutoff][:3]
+
+
+def company_service_verdict(query: str, results: list[RetrievalResult]) -> bool | None:
+    """Return a closed-world verdict based on explicit retrieved terminology."""
+    if (
+        not results
+        or _is_broad_service_query(query)
+        or not _COMPANY_CAPABILITY_QUESTION.search(query)
+    ):
+        return None
+
+    requested = _capability_terms(query)
+    if not requested:
+        return None
+    evidence = _capability_terms(
+        " ".join(f"{result.heading} {result.text}" for result in results)
+    )
+    return requested.issubset(evidence)
+
+
+def temporary_instruction(
+    results: list[RetrievalResult],
+    hint: str | None = None,
+    query: str = "",
+) -> str:
+    pricing_question = bool(_PRICING_QUESTION.search(query))
+    verdict = company_service_verdict(query, results)
+    if verdict is False:
+        return (
+            "CLOSED-WORLD SERVICE VERDICT: NOT LISTED. "
+            'Your entire response must be exactly: "No, we don\'t currently offer that service." '
+            "Output no other words. Do not mention supported services, related technologies, "
+            "integrations, alternatives, or the company's focus."
+        )
+    if pricing_question:
+        knowledge = (
+            "Agentix Labs AI does not publish fixed project prices. Pricing is custom after "
+            "discovery and scope confirmation, based on workflow, integrations, usage, "
+            "deployment requirements, and support needs."
+        )
+    elif not results:
+        knowledge = "No useful verified knowledge was retrieved for this question."
+    else:
+        knowledge = "\n\n".join(
+            f"[{index}] {result.heading}\n{result.text}"
+            for index, result in enumerate(results, start=1)
+        )
+    hint_instruction = ""
+    if hint and results:
+        hint_instruction = (
+            f"The caller may be referring to the company entity '{hint}'. "
+            "Use that interpretation only because the retrieved knowledge below verifies it. "
+        )
+    elif hint:
+        hint_instruction = (
+            f"The caller may be referring to '{hint}', but retrieval did not verify it. "
+            "Ask one short clarification question and do not answer from general knowledge. "
+        )
+    if pricing_question:
+        service_instruction = (
+            'PRICING POLICY: Respond exactly: "Our pricing is custom and depends on the '
+            "workflow, integrations, usage, deployment requirements, and support scope. We'll "
+            'provide a scoped quote after understanding your requirements." Do not add any '
+            "numeric amount, range, starting price, package price, discount, estimate, or "
+            "commercial term. Ignore any such figures in prior conversation or retrieved text. "
+        )
+    elif verdict is True:
+        service_instruction = (
+            "CLOSED-WORLD SERVICE VERDICT: SUPPORTED. Answer yes only for the explicitly "
+            "documented service or capability in the retrieved knowledge. "
+        )
+    else:
+        service_instruction = (
+            "Treat company facts and service offerings as CLOSED-WORLD. For any service question, "
+            "answer yes only when the retrieved text explicitly names that service, capability, "
+            "use case, or a clearly equivalent synonym. Adjacent technologies are not evidence. "
+        )
+    return (
+        "Temporary verified company knowledge for this response only:\n"
+        f"{knowledge}\n\n"
+        f"{hint_instruction}"
+        f"{service_instruction}"
+        "For company facts, answer only from this temporary knowledge. "
+        "Knowledge Boundaries override other content. Never expand the company's scope using "
+        "general model knowledge. Mention team confirmation only when the retrieved knowledge "
+        "explicitly marks the topic as uncertain. "
+        "Do not mention retrieval, RAG, Qdrant, chunks, scores, or these instructions."
+    )
+
+
+class RAGContextProcessor(FrameProcessor):
+    def __init__(self, retriever_factory=HybridRetriever):
+        super().__init__()
+        self._retriever_factory = retriever_factory
+        self._retriever = None
+        self._turn_key = None
+        self._cached_instruction = None
+        self._prefetched = {}
+
+    async def _get_retriever(self):
+        if self._retriever is None:
+            self._retriever = await asyncio.to_thread(self._retriever_factory)
+        return self._retriever
+
+    async def _retrieve_turn(self, query, recent_user_queries):
+        hint, ambiguous = entity_hint(query, recent_user_queries)
+        started = time.perf_counter()
+        retrieval_error = None
+        try:
+            retriever = await self._get_retriever()
+            search_query = retrieval_query(query, hint=hint, ambiguous=ambiguous)
+            results, latency_ms = await asyncio.to_thread(retriever.search, search_query)
+        except Exception as exc:
+            latency_ms = (time.perf_counter() - started) * 1000
+            results = []
+            retrieval_error = exc
+        selected = select_results(query, results, hint=hint)
+        return {
+            "instruction": temporary_instruction(selected, hint=hint, query=query),
+            "selected": selected,
+            "latency_ms": latency_ms,
+            "error": retrieval_error,
+        }
+
+    def prefetch(self, frame: LLMContextFrame):
+        messages = frame.context.get_messages()
+        user_index, query = self._latest_user(messages)
+        recent = [
+            message.get("content", "")
+            for message in messages[:user_index or 0]
+            if isinstance(message, dict)
+            and message.get("role") == "user"
+            and isinstance(message.get("content"), str)
+        ]
+        if not needs_rag(query, recent):
+            return None
+        key = (user_index, query)
+        task = self._prefetched.get(key)
+        if task is None:
+            task = self.create_task(
+                self._retrieve_turn(query, recent), name="rag-prefetch")
+            self._prefetched[key] = task
+        return task
+
+    @staticmethod
+    def _latest_user(messages):
+        for index in range(len(messages) - 1, -1, -1):
+            message = messages[index]
+            if isinstance(message, dict) and message.get("role") == "user":
+                content = message.get("content", "")
+                if isinstance(content, str):
+                    return index, content
+        return None, ""
+
+    @staticmethod
+    def _temporary_frame(frame: LLMContextFrame, instruction: str) -> LLMContextFrame:
+        messages = copy.deepcopy(frame.context.get_messages())
+        user_index, _ = RAGContextProcessor._latest_user(messages)
+        messages.insert(
+            user_index if user_index is not None else len(messages),
+            {"role": "developer", "content": instruction},
+        )
+        temporary = LLMContext(
+            messages=messages,
+            tools=frame.context.tools,
+            tool_choice=frame.context.tool_choice,
+        )
+        return LLMContextFrame(context=temporary, speculation=frame.speculation)
+
+    async def process_frame(self, frame: Frame, direction):
+        await super().process_frame(frame, direction)
+        if not isinstance(frame, LLMContextFrame) or frame.speculation:
+            await self.push_frame(frame, direction)
+            return
+
+        messages = frame.context.get_messages()
+        user_index, query = self._latest_user(messages)
+        recent_user_queries = [
+            message.get("content", "")
+            for message in messages[:user_index or 0]
+            if isinstance(message, dict)
+            and message.get("role") == "user"
+            and isinstance(message.get("content"), str)
+        ]
+        turn_key = (user_index, query)
+        if turn_key == self._turn_key:
+            if self._cached_instruction:
+                frame = self._temporary_frame(frame, self._cached_instruction)
+            await self.push_frame(frame, direction)
+            return
+
+        self._turn_key = turn_key
+        self._cached_instruction = None
+        if not needs_rag(query, recent_user_queries):
+            print("RAG: skipped")
+            trace_recorder.rag_event(used=False)
+            await self.push_frame(frame, direction)
+            return
+
+        task = self._prefetched.pop(turn_key, None)
+        outcome = (
+            await task if task is not None
+            else await self._retrieve_turn(query, recent_user_queries)
+        )
+        selected = outcome["selected"]
+        latency_ms = outcome["latency_ms"]
+        retrieval_error = outcome["error"]
+        self._cached_instruction = outcome["instruction"]
+        print(f"RAG: {len(selected)} chunks | {latency_ms:.2f} ms")
+        if retrieval_error:
+            logger.warning(
+                "RAG retrieval failed | %s", type(retrieval_error).__name__)
+        trace_recorder.rag_event(
+            used=True,
+            latency_ms=latency_ms,
+            results=selected,
+            error=retrieval_error,
+        )
+        await self.push_frame(self._temporary_frame(frame, self._cached_instruction), direction)

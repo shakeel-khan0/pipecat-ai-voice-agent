@@ -1,0 +1,89 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.19.1
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+  voicemem-models:
+    image: agentix-voicemem:de20ffd49bdaeec0217103c8f5315a6073f9590f
+    build:
+      context: docker/voicemem
+      args:
+        VOICEMEM_COMMIT: de20ffd49bdaeec0217103c8f5315a6073f9590f
+    command:
+      - bash
+      - -c
+      - |
+        set -euo pipefail
+        marker=/models/.voicemem-models-ready
+        required_files=(
+          /models/vad/silero_vad.onnx
+          /models/asr/funasr-paraformer-zh-streaming/model.pt
+          /models/speaker/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx
+          /models/embedding/config.json
+          /models/embedding/model.safetensors
+          /models/embedding/tokenizer.json
+          /models/scene/config.json
+          /models/scene/model.safetensors
+          /models/emotion/model.pt
+        )
+        models_ready=true
+        for required_file in "$${required_files[@]}"; do
+          if [ ! -s "$${required_file}" ]; then
+            models_ready=false
+            break
+          fi
+        done
+        if [ -f "$${marker}" ] && [ "$${models_ready}" = true ]; then
+          echo "VoiceMem models already initialized; skipping download."
+          exit 0
+        fi
+        bash scripts/download_models.sh /models
+        for required_file in "$${required_files[@]}"; do
+          test -s "$${required_file}"
+        done
+        touch "$${marker}"
+    volumes:
+      - voicemem_models:/models
+    restart: "no"
+
+  voicemem:
+    image: agentix-voicemem:de20ffd49bdaeec0217103c8f5315a6073f9590f
+    build:
+      context: docker/voicemem
+      args:
+        VOICEMEM_COMMIT: de20ffd49bdaeec0217103c8f5315a6073f9590f
+    command: ["python", "-m", "uvicorn", "service.app:app", "--host", "0.0.0.0", "--port", "8765"]
+    depends_on:
+      voicemem-models:
+        condition: service_completed_successfully
+    environment:
+      GROQ_API_KEY: ${GROQ_API_KEY:?GROQ_API_KEY is required}
+      TEST_CALLER_ID: ${TEST_CALLER_ID:-terminal_test_001}
+      VOICEMEM_MODELS_DIR: /models
+      VOICEMEM_SIDECAR_MEMORY_ROOT: /data/voicemem
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - voicemem_memory:/data/voicemem
+      - voicemem_models:/models:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, urllib.request; data = json.load(urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=5)); assert data.get('alive') is True and data.get('voicemem_available') is True
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 5m
+    restart: unless-stopped
+
+volumes:
+  qdrant_data:
+  voicemem_memory:
+  voicemem_models:
