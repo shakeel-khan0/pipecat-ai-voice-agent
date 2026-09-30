@@ -6,7 +6,7 @@ Built for appointment-based businesses, this receptionist speaks naturally with 
 
 ## Demo
 
-**Public demo media is pending a privacy-safe, current re-recording.**
+https://github.com/user-attachments/assets/df140993-4783-47a8-8158-a6a660d13f77
 
 ## The problem
 
