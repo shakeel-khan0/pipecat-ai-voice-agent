@@ -31,6 +31,24 @@ class BookingSessionTests(unittest.IsolatedAsyncioTestCase):
     async def details(self):
         return await self.session.advance(meeting_date=DATE, name="Test Caller", email="test@example.com")
 
+    async def test_public_demo_blocks_calendar_and_sheets_writes(self):
+        session = BookingSession(public_demo_mode=True)
+        result = await session.advance(
+            meeting_date=DATE,
+            meeting_time="10:00 AM",
+            name="Demo Caller",
+            email="demo@example.com",
+        )
+
+        self.assertEqual(result["status"], "unavailable")
+        self.assertFalse(result["booking_confirmed"])
+        self.assertFalse(result["lead_saved"])
+        self.assertIn("unavailable in this public demo", result["spoken_response"])
+        self.slots.assert_not_called()
+        self.available.assert_not_called()
+        self.create.assert_not_called()
+        self.save.assert_not_called()
+
     async def test_calendar_generation_uses_thirty_minute_duration_at_day_end(self):
         with patch.object(google_calendar, "_get_busy_times", return_value=[]):
             slots = google_calendar.get_available_slots(DATE)

@@ -83,7 +83,7 @@ docker compose up -d
 docker compose ps
 ```
 
-Qdrant remains available at `127.0.0.1:6333`, and VoiceMem remains available at `127.0.0.1:8765`. Named volumes preserve Qdrant data, caller memory, and VoiceMem models. The initializer downloads missing models on the first required startup and skips the download after successful initialization.
+Qdrant remains available at `127.0.0.1:6333`, and VoiceMem remains available at `127.0.0.1:8766`. Named volumes preserve Qdrant data, caller memory, and VoiceMem models. The initializer downloads missing models on the first required startup and skips the download after successful initialization.
 
 To stop the supporting services without deleting their named volumes:
 
@@ -109,7 +109,7 @@ For an existing container, use `docker start agentix-qdrant`. The first index bu
 
 ### 3. Start the VoiceMem sidecar
 
-Skip this manual fallback when VoiceMem is already running through Docker Compose. Manual and Docker VoiceMem cannot run simultaneously because both bind `127.0.0.1:8765`.
+Skip this manual fallback when VoiceMem is already running through Docker Compose. Manual and Docker VoiceMem cannot run simultaneously because both bind `127.0.0.1:8766`.
 
 For the manual workflow, VoiceMem uses a separate environment because its dependency stack is intentionally isolated. In a **separate terminal**, clone the `main` branch of the Agentix-compatible fork and check out the verified immutable revision:
 
@@ -131,7 +131,7 @@ bash scripts/download_models.sh models
 
 export GROQ_API_KEY="..."
 export TEST_CALLER_ID="demo_001"
-python -m uvicorn service.app:app --host 127.0.0.1 --port 8765
+python -m uvicorn service.app:app --host 127.0.0.1 --port 8766
 ```
 
 The sidecar requires `GROQ_API_KEY` and a downloaded local model bundle because it starts in offline model mode. `TEST_CALLER_ID` selects the warm initial caller. Optional `VOICEMEM_MODELS_DIR` and `VOICEMEM_SIDECAR_MEMORY_ROOT` values can point to existing model and private storage directories. By default, caller memory is stored below `service/data/` in hashed caller namespaces.
@@ -141,7 +141,7 @@ This project is verified against fork commit [`de20ffd49bdaeec0217103c8f5315a607
 Check its health:
 
 ```bash
-curl http://127.0.0.1:8765/health
+curl http://127.0.0.1:8766/health
 ```
 
 ### 4. Configure Google and run

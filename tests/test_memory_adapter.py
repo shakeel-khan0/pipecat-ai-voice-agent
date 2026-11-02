@@ -473,6 +473,20 @@ class VoiceMemAdapterTests(unittest.IsolatedAsyncioTestCase):
             assertions,
         )
 
+    async def test_disabled_ingest_forwards_transcript_without_persisting(self):
+        adapter = AsyncMock(spec=VoiceMemAdapter)
+        processor = VoiceMemIngestProcessor(adapter, enabled=False)
+        processor.push_frame = AsyncMock()
+        frame = TranscriptionFrame(
+            "I run a dental clinic.", "user", "demo", finalized=True
+        )
+
+        await processor.process_frame(frame, None)
+
+        processor.push_frame.assert_awaited_once_with(frame, None)
+        adapter.initialize.assert_not_awaited()
+        adapter.ingest.assert_not_awaited()
+
     async def test_only_finalized_user_turns_are_queued_and_duplicates_are_skipped(self):
         adapter = AsyncMock(spec=VoiceMemAdapter)
         adapter.initialize.return_value = True

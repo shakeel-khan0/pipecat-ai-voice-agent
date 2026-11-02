@@ -10,7 +10,7 @@ services:
   voicemem-models:
     image: agentix-voicemem:de20ffd49bdaeec0217103c8f5315a6073f9590f
     build:
-      context: docker/voicemem
+      context: docker
       args:
         VOICEMEM_COMMIT: de20ffd49bdaeec0217103c8f5315a6073f9590f
     command:
@@ -53,10 +53,10 @@ services:
   voicemem:
     image: agentix-voicemem:de20ffd49bdaeec0217103c8f5315a6073f9590f
     build:
-      context: docker/voicemem
+      context: docker
       args:
         VOICEMEM_COMMIT: de20ffd49bdaeec0217103c8f5315a6073f9590f
-    command: ["python", "-m", "uvicorn", "service.app:app", "--host", "0.0.0.0", "--port", "8765"]
+    command: ["python", "-m", "uvicorn", "service.app:app", "--host", "0.0.0.0", "--port", "8766"]
     depends_on:
       voicemem-models:
         condition: service_completed_successfully
@@ -66,7 +66,7 @@ services:
       VOICEMEM_MODELS_DIR: /models
       VOICEMEM_SIDECAR_MEMORY_ROOT: /data/voicemem
     ports:
-      - "127.0.0.1:8765:8765"
+      - "127.0.0.1:8766:8766"
     volumes:
       - voicemem_memory:/data/voicemem
       - voicemem_models:/models:ro
@@ -76,7 +76,7 @@ services:
         - python
         - -c
         - >-
-          import json, urllib.request; data = json.load(urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=5)); assert data.get('alive') is True and data.get('voicemem_available') is True
+          import json, urllib.request; data = json.load(urllib.request.urlopen('http://127.0.0.1:8766/health', timeout=5)); assert data.get('alive') is True and data.get('voicemem_available') is True
       interval: 15s
       timeout: 10s
       retries: 20

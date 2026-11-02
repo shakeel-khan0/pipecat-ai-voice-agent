@@ -6,6 +6,8 @@ import json
 import os
 import re
 import threading
+from contextvars import ContextVar
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
@@ -260,4 +262,26 @@ class TraceMetricsObserver(BaseObserver):
                 self.recorder.write()
 
 
-trace_recorder = TraceRecorder()
+terminal_trace_recorder = TraceRecorder()
+_active_trace_recorder: ContextVar[TraceRecorder] = ContextVar(
+    "active_trace_recorder", default=terminal_trace_recorder
+)
+
+
+class TraceRecorderProxy:
+    """Route existing recorder imports to the recorder for the active session."""
+
+    def __getattr__(self, name):
+        return getattr(_active_trace_recorder.get(), name)
+
+
+@contextmanager
+def use_trace_recorder(recorder: TraceRecorder):
+    token = _active_trace_recorder.set(recorder)
+    try:
+        yield
+    finally:
+        _active_trace_recorder.reset(token)
+
+
+trace_recorder = TraceRecorderProxy()

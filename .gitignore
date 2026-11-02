@@ -45,6 +45,13 @@ dist/
 *.egg-info/
 *.tmp
 
+# Browser frontend dependencies and TypeScript build state
+web/node_modules/
+web/dist/
+web/*.tsbuildinfo
+web/vite.config.js
+web/vite.config.d.ts
+
 # Local runtime data and databases
 *.db
 *.sqlite

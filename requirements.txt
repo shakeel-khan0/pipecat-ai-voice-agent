@@ -1,7 +1,7 @@
 # Tested with Python 3.11 and Pipecat 1.10.0.
 
 # Realtime voice pipeline: Deepgram STT/TTS, Groq LLM, laptop audio, Silero VAD.
-pipecat-ai[deepgram,groq,local,silero]==1.10.0
+pipecat-ai[deepgram,groq,local,runner,silero,webrtc]==1.10.0
 
 # Stateful booking workflow.
 langgraph==1.2.11

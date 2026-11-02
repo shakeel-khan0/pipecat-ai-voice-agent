@@ -222,11 +222,11 @@ Local credentials, virtual environments, runtime traces, internal notes, private
 
 This repository is a production-oriented portfolio and local demonstration implementation. It demonstrates explicit service boundaries, grounded retrieval, persistent caller memory, stateful booking, external write verification, and failure-aware orchestration; it is not a claim of an unattended production deployment.
 
-The Pipecat voice agent runs directly on the host with `python main.py`. As an optional convenience, Docker Compose manages only Qdrant, the VoiceMem HTTP sidecar, and the one-shot VoiceMem model initializer. Qdrant remains exposed at `127.0.0.1:6333`, and VoiceMem remains exposed at `127.0.0.1:8765`.
+The Pipecat voice agent runs directly on the host with `python main.py`. As an optional convenience, Docker Compose manages only Qdrant, the VoiceMem HTTP sidecar, and the one-shot VoiceMem model initializer. Qdrant remains exposed at `127.0.0.1:6333`, and VoiceMem remains exposed at `127.0.0.1:8766`.
 
 Compose uses persistent named volumes for Qdrant data, VoiceMem caller memory, and VoiceMem models. The model initializer downloads models only when required and records successful initialization in the model volume so normal later starts can reuse them. Qdrant is pinned to `qdrant/qdrant:v1.19.1`, and VoiceMem is built from the pinned revision documented in [Persistent Memory Architecture](#6-persistent-memory-architecture).
 
-The manual Qdrant and separate VoiceMem-environment workflow remains supported and does not depend on Compose. Manual and Docker VoiceMem cannot run simultaneously because both use host port `8765`.
+The manual Qdrant and separate VoiceMem-environment workflow remains supported and does not depend on Compose. Manual and Docker VoiceMem cannot run simultaneously because both use host port `8766`.
 
 The current scope is:
 

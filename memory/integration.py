@@ -225,9 +225,10 @@ def temporary_memory_instruction(
 
 
 class VoiceMemContextProcessor(FrameProcessor):
-    def __init__(self, adapter: VoiceMemAdapter | None = None):
+    def __init__(self, adapter: VoiceMemAdapter | None = None, caller_id: str | None = None):
         super().__init__()
         self._adapter = adapter or VoiceMemAdapter()
+        self._caller_id = caller_id
         self._initialized = False
         self._turn_key = None
         self._cached_instruction = ""
@@ -262,7 +263,7 @@ class VoiceMemContextProcessor(FrameProcessor):
         if not self._initialized:
             self._initialized = await self._adapter.initialize()
         result = (
-            await self._adapter.retrieve(resolve_caller_id(), query)
+            await self._adapter.retrieve(self._caller_id or resolve_caller_id(), query)
             if self._initialized
             else {"memories": [], "latency_ms": None}
         )
@@ -342,9 +343,17 @@ class VoiceMemContextProcessor(FrameProcessor):
 class VoiceMemIngestProcessor(FrameProcessor):
     """Queue finalized useful caller turns for non-blocking persistence."""
 
-    def __init__(self, adapter: VoiceMemAdapter | None = None):
+    def __init__(
+        self,
+        adapter: VoiceMemAdapter | None = None,
+        caller_id: str | None = None,
+        *,
+        enabled: bool = True,
+    ):
         super().__init__()
         self._adapter = adapter or VoiceMemAdapter()
+        self._caller_id = caller_id
+        self._enabled = enabled
         self._initialized = False
         self._initialize_lock = asyncio.Lock()
         self._ingest_lock = asyncio.Lock()
@@ -358,6 +367,8 @@ class VoiceMemIngestProcessor(FrameProcessor):
         await super().process_frame(frame, direction)
         await self.push_frame(frame, direction)
 
+        if not self._enabled:
+            return
         if not isinstance(frame, TranscriptionFrame) or not frame.finalized:
             return
         if frame.id in self._seen_ids:
@@ -373,7 +384,7 @@ class VoiceMemIngestProcessor(FrameProcessor):
         self._remember_content(content_key)
 
         task = self.create_task(
-            self._write(resolve_caller_id(), content),
+            self._write(self._caller_id or resolve_caller_id(), content),
             name=f"voicemem-ingest-{frame.id}",
         )
         self._pending.add(task)

@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 
 logger = logging.getLogger(__name__)
-DEFAULT_SIDECAR_URL = "http://127.0.0.1:8765"
+DEFAULT_SIDECAR_URL = "http://127.0.0.1:8766"
 DEFAULT_TIMEOUT_SECONDS = 0.75
 DEFAULT_WRITE_TIMEOUT_SECONDS = 30.0
 

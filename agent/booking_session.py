@@ -35,8 +35,9 @@ _DAYPART_MINUTES = {
 
 
 class BookingSession:
-    def __init__(self, workflow=graph, thread_id=None):
+    def __init__(self, workflow=graph, thread_id=None, *, public_demo_mode=False):
         self.graph = workflow
+        self.public_demo_mode = public_demo_mode
         self.config = {"configurable": {"thread_id": thread_id or str(uuid4())}}
         self._lock = asyncio.Lock()
         self._details = {}
@@ -48,6 +49,16 @@ class BookingSession:
         self._slot_was_taken = False
 
     async def advance(self, **details):
+        if self.public_demo_mode:
+            return {
+                "status": "unavailable",
+                "booking_confirmed": False,
+                "lead_saved": False,
+                "spoken_response": (
+                    "Real booking is unavailable in this public demo. "
+                    "Please contact AgentiX Labs AI to arrange a meeting."
+                ),
+            }
         # Keep an in-flight write alive even if its voice/tool response is interrupted.
         task = asyncio.create_task(self._advance(details))
         self._tasks.add(task)
